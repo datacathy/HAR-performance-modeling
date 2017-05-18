@@ -1,0 +1,110 @@
+---
+title: "Quantifying Exercise Performance"
+author: "Cathy Wyss"
+date: "May 16, 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(corrplot)
+library(caret)
+library(glmnet)
+```
+
+## Introduction
+
+Using devices such as Fitbit it is possible to collect a lot of data about personal activity. Using the Human Activity Recognition (HAR) dataset from [Groupware@LES](http://www.groupware.les.inf/puc-rio.br/har), I was able to successfully predict not how much of a particular activity the subjects did, but how well they did it. For the training set, activity data from the devices was stored along with a "classe" (A through E) indicating how well the activity was performed. For the testing set, 20 new cases appeared for which the classe values had to be predicted. My final model achieved 100% accuracy on the test cases and 97% accuracy on the training data.
+
+## Exploratory Data Analysis
+
+First, I loaded the data from the files downloaded from the coursera website.
+
+```{r}
+training <- read.csv("pml-training.csv", header=TRUE, stringsAsFactors=FALSE, 
+                     na.strings=c("NA", ""))
+testing <- read.csv("pml-testing.csv", header=TRUE, stringsAsFactors=FALSE,
+                    na.strings=c("NA", ""))
+```
+
+Looking at the training data using the str command, I saw immediately that there were many NA values, so the first plot I made was to quantify the number of NA values per column.
+
+```{r}
+na_counts <- sapply(training, function(x) sum(is.na(x)))
+plot(na_counts)
+```
+
+From this, it is clear that for each feature, there are either no NA values, or else there are mostly only NA values. I decided to restrict the analysis to the features with no NA values. This left 60 variables (including the classe variable).
+
+```{r}
+b <- na_counts == 0
+keep <- names(na_counts)[b]
+training <- training[,keep]
+testing <- testing[,keep[-60]]
+```
+
+Next, I computed a correlation matrix for the features. I didn't look at the first few columns, because these contained qualitative data about the subject (e.g. their name) and the dates of the measurements. I figured none of these first variables would impact what class the activity fell into.
+
+```{r}
+C <- cor(training[,-c(1:7,60)])
+```
+
+```{r}
+corrplot(C, method="circle")
+```
+
+There is clearly structure in the correlation matrix, meaning some features are covariant. This means it is possible to use fewer than 60 features in the model for the classe variable. I decided to use the Lasso technique, which would set the coefficients of such features to zero, meaning they wouldn't impact the model predictions.
+
+The "train" method from the caret package couldn't handle outcomes with more than 2 cases, so I turned to the glmnet package [https://cran.r-project.org/web/packages/glmnet/index.html](https://cran.r-project.org/web/packages/glmnet/index.html).
+
+## Lasso Using Package glmnet
+
+The glmnet method needs matrices as input as well as a separate outcome factor variable, which I created with the following code.
+
+```{r}
+x <- as.matrix(training[,-c(1:7,60)])
+y <- as.factor(training$classe)
+newx <- as.matrix(testing[,-c(1:7)])
+```
+
+Then I created my Lasso model. Note that the parameter alpha controls whether the algorithm performs Lasso regularization (alpha=1) or Ridge regularization (alpha=0) or a combination.
+
+```{r,cache=TRUE}
+M <- glmnet(x=x, y=y, alpha=1, family="multinomial")
+```
+
+I needed to figure out a good value for the lambda regularization parameter. The glmnet package has a method to do this via cross-validation which I ran next, and then plotted the results.
+
+```{r,cache=TRUE}
+l <- cv.glmnet(x, y, alpha=1, family="multinomial")
+```
+
+```{r}
+plot(l)
+```
+
+It is clear lower values of lambda are better. The best value (which minimizes cross-validation error) is contained in the variable l$lambda.min, so I picked the model from the Lasso result (M) that corresponds to this lambda and predicted on the test cases.
+
+```{r}
+P1 <- as.factor(predict(M, newx=newx, s=l$lambda.min, type="class"))
+```
+
+I used P1 to answer the 20-question quiz about what class each test case was and obtained 65% which was much better than guessing, but not good enough to pass the quiz.
+
+
+## Other Models
+
+I decided to try other models using the caret package, namely "rpart" (basic decision tree) and "gbm" (boosting). The following table summarizes the results.
+
+<table>
+<tr><th>Model</th><th>Training accuracy</th></tr>
+<tr><td>glmnet (Lasso)</td><td>74%</td></tr>
+<tr><td>rpart</td><td>50%</td></tr>
+<tr><td>gbm</td><td>97%</td></tr>
+</table>
+
+I now had 3 models and decided to stack them together to obtain my final predictions. I used method "rf" (random forest) to combine the predictions from my 3 models. The stacked model obtained 97% accuracy on the training data and 100% accuracy on the test data. Looking at the test results, it is clear the random forest model simply preferred the answers from the boosting model (M3).
+
+## Conclusion
+
+In the case of predicting how well subjects performed activities, boosting using method gbm was the clear winner. It obtained 97% accuracy on the training data and an impressive 100% accuracy on the 20 test cases. Also, no information was lost by leaving out categorical features, dates, and features with mostly NA values, since the model was able to do so well with only 52 predictors.
